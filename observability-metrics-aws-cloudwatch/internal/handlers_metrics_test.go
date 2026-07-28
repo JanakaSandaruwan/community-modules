@@ -21,15 +21,29 @@ import (
 	"github.com/openchoreo/community-modules/observability-metrics-aws-cloudwatch/internal/cloudwatchmetrics"
 )
 
+// OpenChoreo identities are UUIDs on the wire, so the fixtures use real UUIDs
+// rather than readable placeholders. These mirror the values used by the
+// cloudwatchmetrics package tests.
+const (
+	testComponentUID   = "0f99ce77-4eb9-496d-b483-1d477faa96b3"
+	testProjectUID     = "caa09cff-1a1c-43b9-ad2e-bf2ba00d6bd6"
+	testEnvironmentUID = "b020be93-6614-4adc-8d15-1da3f81c87ac"
+
+	testSourceComponentUID      = "eacb463b-88c9-4cde-bdb2-b8f8ad5d30c8"
+	testDestinationComponentUID = "e02ff0f0-14e1-45f9-bb23-7ab8a9480198"
+)
+
 type stubMetricsClient struct {
-	pingErr                        error
-	getResourceFn                  func(context.Context, cloudwatchmetrics.MetricsQueryParams) (*cloudwatchmetrics.ResourceMetricsResult, error)
-	createAlertFn                  func(context.Context, cloudwatchmetrics.MetricAlertParams) (string, error)
-	getAlertFn                     func(context.Context, string, string) (*cloudwatchmetrics.AlertDetail, error)
-	updateAlertFn                  func(context.Context, string, string, cloudwatchmetrics.MetricAlertParams) (string, error)
-	deleteAlertFn                  func(context.Context, string, string) (string, error)
-	getAlarmTagsByName             func(context.Context, string) (map[string]string, error)
-	resolveNamespaceDimensionFn    func(context.Context, string, string) (string, error)
+	pingErr                     error
+	getResourceFn               func(context.Context, cloudwatchmetrics.MetricsQueryParams) (*cloudwatchmetrics.ResourceMetricsResult, error)
+	getHTTPMetricsFn            func(context.Context, cloudwatchmetrics.HTTPMetricsQueryParams) (*cloudwatchmetrics.HTTPMetricsResult, error)
+	getRuntimeTopologyFn        func(context.Context, cloudwatchmetrics.RuntimeTopologyQueryParams) (*cloudwatchmetrics.RuntimeTopologyResult, error)
+	createAlertFn               func(context.Context, cloudwatchmetrics.MetricAlertParams) (string, error)
+	getAlertFn                  func(context.Context, string, string) (*cloudwatchmetrics.AlertDetail, error)
+	updateAlertFn               func(context.Context, string, string, cloudwatchmetrics.MetricAlertParams) (string, error)
+	deleteAlertFn               func(context.Context, string, string) (string, error)
+	getAlarmTagsByName          func(context.Context, string) (map[string]string, error)
+	resolveNamespaceDimensionFn func(context.Context, string, string) (string, error)
 }
 
 func (s *stubMetricsClient) Ping(context.Context) error { return s.pingErr }
@@ -39,6 +53,20 @@ func (s *stubMetricsClient) GetResourceMetrics(ctx context.Context, p cloudwatch
 		return nil, errors.New("unexpected GetResourceMetrics call")
 	}
 	return s.getResourceFn(ctx, p)
+}
+
+func (s *stubMetricsClient) GetHTTPMetrics(ctx context.Context, p cloudwatchmetrics.HTTPMetricsQueryParams) (*cloudwatchmetrics.HTTPMetricsResult, error) {
+	if s.getHTTPMetricsFn == nil {
+		return nil, errors.New("unexpected GetHTTPMetrics call")
+	}
+	return s.getHTTPMetricsFn(ctx, p)
+}
+
+func (s *stubMetricsClient) GetRuntimeTopology(ctx context.Context, p cloudwatchmetrics.RuntimeTopologyQueryParams) (*cloudwatchmetrics.RuntimeTopologyResult, error) {
+	if s.getRuntimeTopologyFn == nil {
+		return nil, errors.New("unexpected GetRuntimeTopology call")
+	}
+	return s.getRuntimeTopologyFn(ctx, p)
 }
 
 func (s *stubMetricsClient) CreateAlert(ctx context.Context, p cloudwatchmetrics.MetricAlertParams) (string, error) {
@@ -140,7 +168,7 @@ func TestQueryMetricsRejectsNilBody(t *testing.T) {
 func TestQueryMetricsRejectsEmptyNamespace(t *testing.T) {
 	h := newTestHandler(&stubMetricsClient{}, nil)
 	body := &gen.MetricsQueryRequest{
-		Metric:      gen.Resource,
+		Metric:      gen.MetricsQueryRequestMetricResource,
 		StartTime:   time.Now().Add(-time.Hour),
 		EndTime:     time.Now(),
 		SearchScope: gen.ComponentSearchScope{Namespace: ""},
@@ -158,7 +186,7 @@ func TestQueryMetricsRejectsInvalidStep(t *testing.T) {
 	h := newTestHandler(&stubMetricsClient{}, nil)
 	step := "garbage"
 	body := &gen.MetricsQueryRequest{
-		Metric:      gen.Resource,
+		Metric:      gen.MetricsQueryRequestMetricResource,
 		StartTime:   time.Now().Add(-time.Hour),
 		EndTime:     time.Now(),
 		SearchScope: gen.ComponentSearchScope{Namespace: "default"},
@@ -194,7 +222,7 @@ func TestQueryMetricsResourceReturnsSeries(t *testing.T) {
 	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
 	client := &stubMetricsClient{
 		getResourceFn: func(_ context.Context, p cloudwatchmetrics.MetricsQueryParams) (*cloudwatchmetrics.ResourceMetricsResult, error) {
-			if p.Namespace != "payments" || p.ComponentUID != "comp-1" {
+			if p.Namespace != "payments" || p.ComponentUID != testComponentUID {
 				t.Fatalf("unexpected scope: %#v", p)
 			}
 			if p.StepSeconds != 60 {
@@ -206,10 +234,10 @@ func TestQueryMetricsResourceReturnsSeries(t *testing.T) {
 		},
 	}
 	h := newTestHandler(client, nil)
-	componentUID := "comp-1"
+	componentUID := testComponentUID
 	step := "1m"
 	body := &gen.MetricsQueryRequest{
-		Metric:    gen.Resource,
+		Metric:    gen.MetricsQueryRequestMetricResource,
 		StartTime: now.Add(-time.Hour),
 		EndTime:   now,
 		SearchScope: gen.ComponentSearchScope{
@@ -245,7 +273,7 @@ func TestQueryMetricsResourcePropagatesClientError(t *testing.T) {
 		},
 	}, nil)
 	body := &gen.MetricsQueryRequest{
-		Metric:      gen.Resource,
+		Metric:      gen.MetricsQueryRequestMetricResource,
 		StartTime:   time.Now().Add(-time.Hour),
 		EndTime:     time.Now(),
 		SearchScope: gen.ComponentSearchScope{Namespace: "default"},
@@ -259,17 +287,37 @@ func TestQueryMetricsResourcePropagatesClientError(t *testing.T) {
 	}
 }
 
-func TestQueryMetricsHTTPReturnsEmptyArraysAndNoticeHeader(t *testing.T) {
-	h := newTestHandler(&stubMetricsClient{}, nil)
+func TestQueryMetricsHTTPReturnsSeriesWithPercentiles(t *testing.T) {
+	ts := time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC)
+	var gotParams cloudwatchmetrics.HTTPMetricsQueryParams
+	client := &stubMetricsClient{
+		getHTTPMetricsFn: func(_ context.Context, p cloudwatchmetrics.HTTPMetricsQueryParams) (*cloudwatchmetrics.HTTPMetricsResult, error) {
+			gotParams = p
+			return &cloudwatchmetrics.HTTPMetricsResult{
+				RequestCount:             []cloudwatchmetrics.TimeValuePoint{{Timestamp: ts, Value: 10}},
+				SuccessfulRequestCount:   []cloudwatchmetrics.TimeValuePoint{{Timestamp: ts, Value: 7}},
+				UnsuccessfulRequestCount: []cloudwatchmetrics.TimeValuePoint{{Timestamp: ts, Value: 3}},
+				MeanLatency:              []cloudwatchmetrics.TimeValuePoint{{Timestamp: ts, Value: 0.25}},
+				LatencyP50:               []cloudwatchmetrics.TimeValuePoint{{Timestamp: ts, Value: 0.2}},
+				LatencyP90:               []cloudwatchmetrics.TimeValuePoint{{Timestamp: ts, Value: 0.4}},
+				LatencyP99:               []cloudwatchmetrics.TimeValuePoint{{Timestamp: ts, Value: 0.5}},
+			}, nil
+		},
+	}
+	h := newTestHandler(client, nil)
+	componentUID := testComponentUID
 	body := &gen.MetricsQueryRequest{
-		Metric:      gen.Http,
-		StartTime:   time.Now().Add(-time.Hour),
-		EndTime:     time.Now(),
-		SearchScope: gen.ComponentSearchScope{Namespace: "default"},
+		Metric:      gen.MetricsQueryRequestMetricHttp,
+		StartTime:   ts.Add(-time.Hour),
+		EndTime:     ts,
+		SearchScope: gen.ComponentSearchScope{Namespace: "default", ComponentUid: &componentUID},
 	}
 	resp, err := h.QueryMetrics(context.Background(), gen.QueryMetricsRequestObject{Body: body})
 	if err != nil {
 		t.Fatalf("QueryMetrics() error = %v", err)
+	}
+	if gotParams.ComponentUID != componentUID || gotParams.Namespace != "default" {
+		t.Fatalf("unexpected params passed to GetHTTPMetrics: %+v", gotParams)
 	}
 	ok, isOK := resp.(httpMetricsQueryOKResponse)
 	if !isOK {
@@ -279,21 +327,127 @@ func TestQueryMetricsHTTPReturnsEmptyArraysAndNoticeHeader(t *testing.T) {
 	if err := ok.VisitQueryMetricsResponse(rec); err != nil {
 		t.Fatalf("VisitQueryMetricsResponse: %v", err)
 	}
-	if got := rec.Header().Get("X-OpenChoreo-Adapter-Notice"); got != "http-metrics-not-implemented" {
-		t.Fatalf("expected notice header, got %q", got)
+	if got := rec.Header().Get("X-OpenChoreo-Adapter-Notice"); got != "" {
+		t.Fatalf("expected no adapter-notice header now that percentiles are served, got %q", got)
 	}
-	var asMap map[string]any
+	var asMap map[string][]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &asMap); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	for _, key := range []string{"requestCount", "successfulRequestCount", "unsuccessfulRequestCount", "meanLatency", "latencyP50", "latencyP90", "latencyP99"} {
-		arr, ok := asMap[key].([]any)
-		if !ok {
-			t.Fatalf("expected %s to be an array, got %T", key, asMap[key])
+		if len(asMap[key]) != 1 {
+			t.Fatalf("expected %s to have 1 item, got %d", key, len(asMap[key]))
 		}
-		if len(arr) != 0 {
-			t.Fatalf("expected %s to be empty, got %d items", key, len(arr))
-		}
+	}
+}
+
+func TestQueryRuntimeTopologyReturnsEdges(t *testing.T) {
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	client := &stubMetricsClient{
+		getRuntimeTopologyFn: func(_ context.Context, p cloudwatchmetrics.RuntimeTopologyQueryParams) (*cloudwatchmetrics.RuntimeTopologyResult, error) {
+			if p.Namespace != "payments" || p.ProjectUID != testProjectUID || p.EnvironmentUID != testEnvironmentUID {
+				t.Fatalf("unexpected params: %#v", p)
+			}
+			mean := 0.12
+			return &cloudwatchmetrics.RuntimeTopologyResult{Edges: []cloudwatchmetrics.RuntimeTopologyEdgeResult{
+				{
+					SourceComponentUID:       testSourceComponentUID,
+					SourceComponentName:      "frontend",
+					SourceNamespace:          "payments",
+					DestinationComponentUID:  testDestinationComponentUID,
+					DestinationComponentName: "checkout",
+					DestinationNamespace:     "payments",
+					RequestCount:             12,
+					ErrorCount:               2,
+					MeanLatency:              &mean,
+				},
+			}}, nil
+		},
+	}
+	h := newTestHandler(client, nil)
+	body := &gen.RuntimeTopologyRequest{
+		StartTime: now.Add(-time.Hour),
+		EndTime:   now,
+	}
+	body.SearchScope.Namespace = "payments"
+	body.SearchScope.ProjectUid = testProjectUID
+	body.SearchScope.EnvironmentUid = testEnvironmentUID
+
+	resp, err := h.QueryRuntimeTopology(context.Background(), gen.QueryRuntimeTopologyRequestObject{Body: body})
+	if err != nil {
+		t.Fatalf("QueryRuntimeTopology() error = %v", err)
+	}
+	ok, isOK := resp.(gen.QueryRuntimeTopology200JSONResponse)
+	if !isOK {
+		t.Fatalf("expected 200 response, got %T", resp)
+	}
+	if ok.Edges == nil || len(*ok.Edges) != 1 {
+		t.Fatalf("expected one edge, got %#v", ok.Edges)
+	}
+	if (*ok.Edges)[0].Id != testSourceComponentUID+"->"+testDestinationComponentUID {
+		t.Fatalf("unexpected edge id: %s", (*ok.Edges)[0].Id)
+	}
+}
+
+// An edge with no duration samples must omit meanLatency from the serialized
+// response rather than emit a misleading zero.
+func TestQueryRuntimeTopologyOmitsMeanLatencyWhenNoDurationSamples(t *testing.T) {
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	client := &stubMetricsClient{
+		getRuntimeTopologyFn: func(_ context.Context, _ cloudwatchmetrics.RuntimeTopologyQueryParams) (*cloudwatchmetrics.RuntimeTopologyResult, error) {
+			return &cloudwatchmetrics.RuntimeTopologyResult{Edges: []cloudwatchmetrics.RuntimeTopologyEdgeResult{
+				{
+					SourceComponentUID:      testSourceComponentUID,
+					DestinationComponentUID: testDestinationComponentUID,
+					RequestCount:            12,
+					ErrorCount:              2,
+					MeanLatency:             nil, // no duration samples
+				},
+			}}, nil
+		},
+	}
+	h := newTestHandler(client, nil)
+	body := &gen.RuntimeTopologyRequest{StartTime: now.Add(-time.Hour), EndTime: now}
+	body.SearchScope.Namespace = "payments"
+	body.SearchScope.ProjectUid = testProjectUID
+	body.SearchScope.EnvironmentUid = testEnvironmentUID
+
+	resp, err := h.QueryRuntimeTopology(context.Background(), gen.QueryRuntimeTopologyRequestObject{Body: body})
+	if err != nil {
+		t.Fatalf("QueryRuntimeTopology() error = %v", err)
+	}
+	ok, isOK := resp.(gen.QueryRuntimeTopology200JSONResponse)
+	if !isOK {
+		t.Fatalf("expected 200 response, got %T", resp)
+	}
+	encoded, err := json.Marshal(gen.RuntimeTopologyResponse(ok))
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	if strings.Contains(string(encoded), "meanLatency") {
+		t.Fatalf("meanLatency must be omitted when there are no duration samples:\n%s", encoded)
+	}
+	// The RED counts must still be present.
+	if !strings.Contains(string(encoded), "requestCount") {
+		t.Fatalf("requestCount should be present:\n%s", encoded)
+	}
+}
+
+func TestQueryRuntimeTopologyRejectsMissingScope(t *testing.T) {
+	h := newTestHandler(&stubMetricsClient{}, nil)
+	body := &gen.RuntimeTopologyRequest{
+		StartTime: time.Now().Add(-time.Hour),
+		EndTime:   time.Now(),
+	}
+	body.SearchScope.Namespace = "payments"
+	body.SearchScope.ProjectUid = testProjectUID
+
+	resp, err := h.QueryRuntimeTopology(context.Background(), gen.QueryRuntimeTopologyRequestObject{Body: body})
+	if err != nil {
+		t.Fatalf("QueryRuntimeTopology() error = %v", err)
+	}
+	if _, ok := resp.(gen.QueryRuntimeTopology400JSONResponse); !ok {
+		t.Fatalf("expected 400 response, got %T", resp)
 	}
 }
 
